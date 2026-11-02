@@ -8,7 +8,7 @@ import { agents, panes, spaces, focused, exec, home, appHome, readTextFile, sett
 
 const LINES = 400;      // messages read per pass
 const KEEP = 4000;      // messages kept per session on disk
-const TAIL = 2000000;   // bytes read from the end at first; "更早" multiplies it
+const TAIL = 2000000;   // bytes read from the end at first; "older" multiplies it
 const SHOWN = 150;      // rows drawn at once
 const FILES = 12;       // sessions offered per folder
 const TICK = 20000;     // a safety refresh; agent changes drive the rest
@@ -297,7 +297,7 @@ export default class Prompts extends View {
         + " | Where-Object { $_ -like '*" + '"role":"user"' + "*' } | Select-Object -Last " + LINES;
       r = await exec("powershell", ["-NoProfile", "-NonInteractive", "-Command", script]).catch(() => null);
     }
-    if (!r || r.code !== 0) return { prompts: [], error: "读不到这个会话文件。" };
+    if (!r || r.code !== 0) return { prompts: [], error: "Cannot read this session file." };
     return { prompts: parseLines(r.stdout) };
   }
 
@@ -439,6 +439,27 @@ export default class Prompts extends View {
     return { w: Math.round(i.w * k), h: Math.round(i.h * k) };
   }
 
+  // The same for a picture on another machine: base64 on that side, decoded into the cache here.
+  async cacheRemote(src, machine, name) {
+    const dir = appHome() + "/cache/prompts", dest = this.join(dir, name);
+    const r = await exec("sh", ["-c", 'base64 < "$1"', "sh", src], { on: machine }).catch(() => null);
+    if (!r || r.code !== 0 || !r.stdout) return false;
+    const tmp = this.join(dir, "b64-" + name + ".txt");
+    try {
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(tmp, String(r.stdout).replace(/\s+/g, ""));
+    } catch { return false; }
+    const cmd = "$b=[IO.File]::ReadAllText(" + ps(tmp) + "); [IO.File]::WriteAllBytes(" + ps(dest)
+      + ", [Convert]::FromBase64String($b)); (Get-Item -LiteralPath " + ps(dest) + ").Length";
+    const out = await exec("powershell", ["-NoProfile", "-NonInteractive", "-Command", cmd]).catch(() => null);
+    try { await fs.unlink(tmp); } catch { /* the cache is not precious */ }
+    return Boolean(out && Number(String(out.stdout).trim()) > 0);
+  }
+
+  copyPicture(src, machine, name) {
+    return machine === null ? this.cache(src, name) : this.cacheRemote(src, machine, name);
+  }
+
   cached(path) {
     const base = String(path).replace(/\.[^.]*$/, "").replace(/[^A-Za-z0-9]+/g, "").slice(-22);
     return (base || "picture") + "." + (ext(path) || "png");
@@ -472,13 +493,13 @@ export default class Prompts extends View {
       try {
         const paths = await this.existing(pointers(p.text), machine);
         this.links[id] = paths;
-        if (machine === null && p.images?.length) {
+        if (p.images?.length) {
           const made = [];
           for (const pic of p.images.slice(0, 4)) {
             const tail = (String(pic.mime).split("/").pop() || "png").replace("jpeg", "jpg");
             const name = pic.hash.slice(0, 16) + "." + tail;
             for (const from of [this.join(blobs, pic.hash + "." + tail), this.join(blobs, pic.hash)]) {
-              if (await this.cache(from, name)) {
+              if (await this.copyPicture(from, machine, name)) {
         const rel = "cache/prompts/" + name;
         made.push({ rel, path: from });
         this.sizes = this.sizes ?? {};
@@ -504,9 +525,8 @@ export default class Prompts extends View {
     const set = (next) => { this.preview = next; cx.notify(); };
     try {
       if (IMAGE.includes(ext(path))) {
-        if (machine !== null) return set({ kind: "other", title: leaf(path), path, note: "A picture on " + machine + ": no preview from here." });
         const name = this.cached(path);
-        if (!(await this.cache(path, name))) return set({ kind: "other", title: leaf(path), path, note: "This picture cannot be read." });
+        if (!(await this.copyPicture(path, machine, name))) return set({ kind: "other", title: leaf(path), path, note: "This picture cannot be read." });
         const rel = "cache/prompts/" + name;
         this.sizes = this.sizes ?? {};
         this.sizes[rel] = await this.dims(this.join(appHome(), rel));
@@ -538,16 +558,16 @@ export default class Prompts extends View {
       const r = await exec("powershell", ["-NoProfile", "-Sta", "-Command", cmd]).catch(() => null);
       return Boolean(r && /ok/.test(r.stdout));
     };
-    let note = (await put(path)) ? "已复制图片" : null;
+    let note = (await put(path)) ? "Image copied" : null;
     if (!note) {
       const out = this.join(appHome() + "/cache/prompts", "clip-" + String(path).replace(/[^A-Za-z0-9]/g, "").slice(-20) + ".png");
       const args = ["-y", "-loglevel", "error", "-i", path, out];
       const conv = await exec("ffmpeg", args).catch(() => null);
       if ((conv && conv.code === 0) || ((await exec("E:\\ffmpeg-master-latest-win64-gpl\\bin\\ffmpeg.exe", args).catch(() => null))?.code === 0)) {
-        if (await put(out)) note = "已复制图片（WebP 转成 PNG 后放入剪贴板）";
+        if (await put(out)) note = "Image copied (WebP converted to PNG)";
       }
     }
-    this.copiedMsg = note ?? "这张图系统剪贴板读不了（转换也失败了）";
+    this.copiedMsg = note ?? "This image cannot go on the clipboard";
     cx.notify();
     cx.timer.after(2600, (cx) => { this.copiedMsg = null; cx.notify(); });
   }
@@ -592,11 +612,9 @@ export default class Prompts extends View {
       this.seen[agent.address] = agent.seq;
       this.load(cx, agent.address);
     }
+    if (this.preview) return this.drawPreview(t);
     const button = (id, text, action) => h_flex().id(id).h(22).px(6).flex_none().items_center().rounded(6).text_size(11.5)
       .text_color(t.dim).hover((e) => e.bg(t.hover).text_color(t.foreground)).on_click(action).child(text);
-
-    if (this.preview) return this.drawPreview(t);
-
     const chip = (a) => h_flex().id("ag-" + a.address).h(25).px(8).gap(5).flex_none().items_center().rounded(7).border(1)
       .border_color(a.address === this.selected ? t.accent : t.border)
       .bg(a.address === this.selected ? t.selected : t.chrome)
@@ -664,7 +682,7 @@ export default class Prompts extends View {
             .hover((x) => x.bg(t.hover).text_color(t.foreground))
             .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
             .on_click((_e, cx) => { cx.write_to_clipboard(p.text); this.copied = id; cx.notify(); cx.timer.after(1200, (cx) => { if (this.copied === id) { this.copied = null; cx.notify(); } }); })
-            .child(this.copied === id ? "已复制" : "复制"))))
+            .child(this.copied === id ? "copied" : "copy"))))
         .child(div().text_size(12).text_color(t.foreground).child(text))
         .when(shown && links.length > 0, (e) => e.child(h_flex().gap(4).flex_wrap().items_center().children(links.map(pointerChip))))
         .when(shown && thumbs.length > 0, (e) => e.child(v_flex().pt(2).gap(6).children(thumbs.map(thumb))))
@@ -676,7 +694,7 @@ export default class Prompts extends View {
     const body = !agent ? note("No agents yet.")
       : !s ? note("Reading the log…")
         : s.error ? note(s.error, t.blocked)
-          : shown.length === 0 ? note("这个会话里还没有消息。")
+          : shown.length === 0 ? note("No messages in this session yet.")
             : v_flex().flex_1().min_h(0).overflow_y_scrollbar().children(shown.map(item));
 
     return v_flex().id("root").size_full().min_w(0).bg(t.surface).text_color(t.foreground)
@@ -694,11 +712,11 @@ export default class Prompts extends View {
             .border(1).border_color(t.border).bg(t.chrome).text_color(t.dim)
             .hover((x) => x.bg(t.hover).text_color(t.foreground))
             .on_click((_e, cx) => { this.pickAgent = !this.pickAgent; localStorage.setItem("prompts.agents", this.pickAgent ? "1" : "0"); cx.notify(); })
-            .child(this.pickAgent ? "收起" : list.length + " 个 agent"))))
+            .child(this.pickAgent ? "hide" : list.length + " agents"))))
         .when(this.pickAgent, (el) => el.child(v_flex().id("ag-list").h(190).overflow_y_scrollbar().gap(1)
           .children(ordered.map(agentRow)))))
       .when((s?.files?.length ?? 0) > 1, (el) => el.child(h_flex().flex_none().px(8).pb(6).gap(5).flex_wrap().items_center()
-        .child(div().text_size(10.5).text_color(t.dim).child("会话"))
+        .child(div().text_size(10.5).text_color(t.dim).child("sessions"))
         .children(s.files.map((name, i) => session(name, i)))))
       .child(h_flex().flex_none().px(10).pb(6).items_center().gap(6)
         .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim)
@@ -710,7 +728,7 @@ export default class Prompts extends View {
             this.depth = this.depth ?? {};
             this.depth[s.key] = Math.min(32000000, (this.depth[s.key] ?? TAIL) * 4);
             this.load(cx, agent.address, true);
-          }).child("更早"))))
+          }).child("older"))))
       .child(body);
   }
 
@@ -729,7 +747,7 @@ export default class Prompts extends View {
           if (p.kind === "image") this.copyImage(p.path, cx);
           else if (p.text) cx.write_to_clipboard(p.text);
         })
-        .child(p.kind === "image" ? "复制图片" : "复制文本"))
+        .child(p.kind === "image" ? "Copy image" : "Copy text"))
       .when(p.kind === "other", (e) => e.child(h_flex().id("pv-open").h(22).px(7).flex_none().items_center().rounded(6).text_size(11.5)
         .text_color(t.accent).hover((x) => x.bg(t.hover)).on_click(() => this.openElsewhere(p.path)).child("Open")));
     const foot = h_flex().flex_none().px(10).py(5).gap(8).border_t(1).border_color(t.border)
