@@ -1,3 +1,8 @@
 node_modules/
 .DS_Store
 *.log
+
+# herdr writes these into every mod folder on start
+gpui-kit.d.ts
+jsconfig.json
+*.error
