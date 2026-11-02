@@ -671,11 +671,26 @@ export default class Prompts extends View {
       })
       .child(div().max_w(180).truncate().child((l.url ? "↗ " : IMAGE.includes(ext(l.path)) ? "▣ " : "▤ ") + leaf(l.path)));
 
-    const thumb = (m) => div().id("th-" + m.rel).h(this.fit({ rel: m.rel, w: 300, h: 110 }, 0, 0).h ?? 110)
-      .w(this.fit({ rel: m.rel, w: 300, h: 110 }, 0, 0).w ?? 300).rounded(6).overflow_hidden().border_1().border_color(t.border)
-      .cursor_pointer().on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .on_click((_e, cx) => { this.preview = { kind: "image", title: leaf(m.path), path: m.path, rel: m.rel }; cx.notify(); })
-      .child(image(m.rel).h(120));
+    // A picture too wide or tall to show as a strip gets a chip saying its size instead.
+    const thumb = (m) => {
+      const box = this.fit({ rel: m.rel, w: 300, h: 110 }, 0, 0);
+      const size = this.sizes?.[m.rel];
+      const flat = !box.h || box.h < 24 || box.w < 24;
+      if (flat) {
+        const label = size ? size.w + "\u00d7" + size.h + " picture" : "picture";
+        return h_flex().id("th-" + m.rel).h(24).px(8).gap(6).flex_none().items_center().rounded(6)
+          .border_1().border_color(t.border).bg(t.chrome).text_size(11).text_color(t.muted)
+          .hover((x) => x.bg(t.hover).text_color(t.foreground))
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click((_e, cx) => { this.preview = { kind: "image", title: leaf(m.path), path: m.path, rel: m.rel }; cx.notify(); })
+          .child(div().child(label))
+          .child(div().text_color(t.dim).child("open"));
+      }
+      return div().id("th-" + m.rel).h(box.h).w(box.w).rounded(6).overflow_hidden().border_1().border_color(t.border)
+        .cursor_pointer().on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => { this.preview = { kind: "image", title: leaf(m.path), path: m.path, rel: m.rel }; cx.notify(); })
+        .child(image(m.rel).h(box.h));
+    };
 
     const item = (p, i) => {
       const id = agent.address + "|" + i;
@@ -765,7 +780,7 @@ export default class Prompts extends View {
           else if (p.text) cx.write_to_clipboard(p.text);
         })
         .child(p.kind === "image" ? "Copy image" : "Copy text"))
-      .when(p.kind === "other", (e) => e.child(h_flex().id("pv-open").h(22).px(7).flex_none().items_center().rounded(6).text_size(11.5)
+      .when(p.kind === "image" || p.kind === "other", (e) => e.child(h_flex().id("pv-open").h(22).px(7).flex_none().items_center().rounded(6).text_size(11.5)
         .text_color(t.accent).hover((x) => x.bg(t.hover)).on_click(() => this.openElsewhere(p.path)).child("Open")));
     const foot = h_flex().flex_none().px(10).py(5).gap(8).border_t(1).border_color(t.border)
       .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(p.path ?? ""))
