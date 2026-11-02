@@ -456,8 +456,19 @@ export default class Prompts extends View {
     return Boolean(out && Number(String(out.stdout).trim()) > 0);
   }
 
-  copyPicture(src, machine, name) {
-    return machine === null ? this.cache(src, name) : this.cacheRemote(src, machine, name);
+  // Whatever came in, the cache holds a PNG: the image loader draws it and the clipboard takes it.
+  async settle(name) {
+    if (/\.(png|jpg|jpeg|gif|bmp)$/i.test(name)) return name;
+    const dir = appHome() + "/cache/prompts", out = name.replace(/\.[^.]+$/, "") + ".png";
+    const r = await exec("ffmpeg", ["-y", "-loglevel", "error", "-i", this.join(dir, name), this.join(dir, out)]).catch(() => null);
+    if (!r || r.code !== 0) return name;
+    try { await fs.unlink(this.join(dir, name)); } catch { /* keep both, harmless */ }
+    return out;
+  }
+
+  async copyPicture(src, machine, name) {
+    const ok = machine === null ? await this.cache(src, name) : await this.cacheRemote(src, machine, name);
+    return ok ? this.settle(name) : null;
   }
 
   cached(path) {
@@ -499,13 +510,13 @@ export default class Prompts extends View {
             const tail = (String(pic.mime).split("/").pop() || "png").replace("jpeg", "jpg");
             const name = pic.hash.slice(0, 16) + "." + tail;
             for (const from of [this.join(blobs, pic.hash + "." + tail), this.join(blobs, pic.hash)]) {
-              if (await this.copyPicture(from, machine, name)) {
-        const rel = "cache/prompts/" + name;
-        made.push({ rel, path: from });
-        this.sizes = this.sizes ?? {};
-        this.sizes[rel] = await this.dims(this.join(appHome(), rel));
-        break;
-      }
+              const got = await this.copyPicture(from, machine, name);
+              if (!got) continue;
+              const rel = "cache/prompts/" + got;
+              made.push({ rel, path: from });
+              this.sizes = this.sizes ?? {};
+              this.sizes[rel] = await this.dims(this.join(appHome(), rel));
+              break;
             }
           }
           this.thumbs[id] = made;
@@ -526,13 +537,19 @@ export default class Prompts extends View {
     try {
       if (IMAGE.includes(ext(path))) {
         const name = this.cached(path);
-        if (!(await this.copyPicture(path, machine, name))) return set({ kind: "other", title: leaf(path), path, note: "This picture cannot be read." });
-        const rel = "cache/prompts/" + name;
+        const made = await this.copyPicture(path, machine, name);
+        if (!made) return set({ kind: "other", title: leaf(path), path, note: "This picture cannot be read." });
+        const rel = "cache/prompts/" + made;
         this.sizes = this.sizes ?? {};
         this.sizes[rel] = await this.dims(this.join(appHome(), rel));
         return set({ kind: "image", title: leaf(path), path, rel });
       }
-      const text = await readTextFile(path, { on: machine });
+      let text;
+      if (machine === null) text = await readTextFile(path);
+      else {
+        const r = await exec("sh", ["-c", 'head -c 2000000 "$1"', "sh", path], { on: machine }).catch(() => null);
+        text = r && r.code === 0 && r.stdout ? r.stdout : null;
+      }
       if (text === null) return set({ kind: "other", title: leaf(path), path, note: "This file cannot be read." });
       if (text.includes("\0")) return set({ kind: "other", title: leaf(path), path, note: "A binary file: no text preview." });
       const t = theme();
