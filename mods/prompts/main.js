@@ -9,7 +9,7 @@ import { agents, panes, spaces, focused, exec, home, appHome, readTextFile, sett
 const LINES = 400;      // messages read per pass
 const KEEP = 4000;      // messages kept per session on disk
 const TAIL = 2000000;   // bytes read from the end at first; "older" multiplies it
-const SHOWN = 150;      // rows drawn at once
+const SHOWN = 300;      // rows drawn at once
 const FILES = 12;       // sessions offered per folder
 const TICK = 20000;     // a safety refresh; agent changes drive the rest
 const CHIPS = 8;        // links and files offered per message
@@ -753,6 +753,8 @@ export default class Prompts extends View {
       .child(h_flex().flex_none().px(10).pb(6).items_center().gap(6)
         .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim)
           .child(s && !s.error ? (s.cwd ?? s.folder ?? "") + (s.machine ? " · " + s.machine : "") : ""))
+        .when(Boolean(s) && (s.prompts?.length ?? 0) > SHOWN, (el) => el.child(div().text_size(10.5).text_color(t.dim)
+          .child("newest " + SHOWN + " of " + s.prompts.length)))
         .when(Boolean(s?.more), (el) => el.child(h_flex().id("pr-more").h(20).px(7).flex_none().items_center().rounded(5)
           .text_size(10.5).text_color(t.dim).border_1().border_color(t.border).bg(t.chrome)
           .hover((x) => x.bg(t.hover).text_color(t.foreground))
