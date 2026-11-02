@@ -1,0 +1,5 @@
+{
+  "global": {
+    "alt-p": "mod.open:prompts"
+  }
+}
