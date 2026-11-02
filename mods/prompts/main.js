@@ -542,7 +542,7 @@ export default class Prompts extends View {
         const rel = "cache/prompts/" + made;
         this.sizes = this.sizes ?? {};
         this.sizes[rel] = await this.dims(this.join(appHome(), rel));
-        return set({ kind: "image", title: leaf(path), path, rel });
+        return set({ kind: "image", title: leaf(path), path, rel, cached: rel, machine });
       }
       let text;
       if (machine === null) text = await readTextFile(path);
@@ -682,13 +682,13 @@ export default class Prompts extends View {
           .border_1().border_color(t.border).bg(t.chrome).text_size(11).text_color(t.muted)
           .hover((x) => x.bg(t.hover).text_color(t.foreground))
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-          .on_click((_e, cx) => { this.preview = { kind: "image", title: leaf(m.path), path: m.path, rel: m.rel }; cx.notify(); })
+          .on_click((_e, cx) => { this.preview = { kind: "image", title: leaf(m.path), path: m.path, rel: m.rel, cached: m.rel }; cx.notify(); })
           .child(div().child(label))
           .child(div().text_color(t.dim).child("open"));
       }
       return div().id("th-" + m.rel).h(box.h).w(box.w).rounded(6).overflow_hidden().border_1().border_color(t.border)
         .cursor_pointer().on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-        .on_click((_e, cx) => { this.preview = { kind: "image", title: leaf(m.path), path: m.path, rel: m.rel }; cx.notify(); })
+        .on_click((_e, cx) => { this.preview = { kind: "image", title: leaf(m.path), path: m.path, rel: m.rel, cached: m.rel }; cx.notify(); })
         .child(image(m.rel).h(box.h));
     };
 
@@ -776,14 +776,17 @@ export default class Prompts extends View {
       .child(h_flex().id("pv-copy").h(22).px(7).flex_none().items_center().rounded(6).text_size(11.5)
         .text_color(t.accent).hover((x) => x.bg(t.hover))
         .on_click((_e, cx) => {
-          if (p.kind === "image") this.copyImage(p.path, cx);
+          if (p.kind === "image") this.copyImage(p.cached ? this.join(appHome(), p.cached) : p.path, cx);
           else if (p.text) cx.write_to_clipboard(p.text);
         })
         .child(p.kind === "image" ? "Copy image" : "Copy text"))
-      .when(p.kind === "image" || p.kind === "other", (e) => e.child(h_flex().id("pv-open").h(22).px(7).flex_none().items_center().rounded(6).text_size(11.5)
-        .text_color(t.accent).hover((x) => x.bg(t.hover)).on_click(() => this.openElsewhere(p.path)).child("Open")));
+      // open what is here: the cached copy for a picture, the file itself when it is local
+      .when(Boolean(p.cached) || (!p.machine && p.path), (e) => e.child(h_flex().id("pv-open").h(22).px(7).flex_none().items_center().rounded(6).text_size(11.5)
+        .text_color(t.accent).hover((x) => x.bg(t.hover))
+        .on_click(() => this.openElsewhere(p.cached ? this.join(appHome(), p.cached) : p.path)).child("Open")));
     const foot = h_flex().flex_none().px(10).py(5).gap(8).border_t(1).border_color(t.border)
-      .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(p.path ?? ""))
+      .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim)
+        .child(p.cached ? "cached · " + p.cached : (p.path ?? "")))
       .when(Boolean(this.copiedMsg), (e) => e.child(div().text_size(10.5).text_color(t.done).child(this.copiedMsg)));
     const body = p.kind === "image" && p.rel ? div().flex_1().min_h(0).p(8).child(image(p.rel).size_full())
       : p.kind === "text" && this.code ? Editor.new(this.code).flex_1().min_h(0)
